@@ -17,6 +17,7 @@ import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.api.tasks.TaskContainer;
 import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.testing.Test;
+import org.gradle.language.jvm.tasks.ProcessResources;
 
 import io.quarkus.bootstrap.BootstrapConstants;
 import io.quarkus.bootstrap.model.ApplicationModel;
@@ -36,6 +37,7 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
     public static final String EXTENSION_CONFIGURATION_NAME = ExtensionConstants.EXTENSION_CONFIGURATION_NAME;
 
     public static final String EXTENSION_DESCRIPTOR_TASK_NAME = "extensionDescriptor";
+    public static final String PROCESS_RESOURCES_TASK_NAME = "processResources";
     public static final String VALIDATE_EXTENSION_TASK_NAME = "validateExtension";
     private static final String DEPLOYMENT_CLASSPATH_CONFIGURATION_NAME = "quarkusDeploymentClasspath";
 
@@ -65,17 +67,25 @@ public class QuarkusExtensionPlugin implements Plugin<Project> {
 
         TaskProvider<ValidateExtensionTask> validateExtensionTask = tasks.register(VALIDATE_EXTENSION_TASK_NAME,
                 ValidateExtensionTask.class, quarkusExt, runtimeModuleClasspath);
-
         TaskProvider<ExtensionDescriptorTask> extensionDescriptorTask = tasks.register(EXTENSION_DESCRIPTOR_TASK_NAME,
-                ExtensionDescriptorTask.class, quarkusExt, mainSourceSet, runtimeModuleClasspath);
-
+                ExtensionDescriptorTask.class, quarkusExt, mainSourceSet, runtimeModuleClasspath); // backward compatibility
         extensionDescriptorTask.configure(task -> task.dependsOn(validateExtensionTask));
+
+        // Creation of the extension descriptor has to be done together with the "processResources" task.
+        // If this would be done in an own task (e.g. ExtensionDescriptorTask) both would share the output directory
+        // which would kill the gradle up-to-date check. (See https://github.com/quarkusio/quarkus/issues/55551).
+        tasks.named(JavaPlugin.PROCESS_RESOURCES_TASK_NAME, ProcessResources.class, processResources -> {
+            new ExtensionProcessResourcesTaskDecorator(project, processResources, quarkusExt, mainSourceSet,
+                    runtimeModuleClasspath).decorate();
+        });
 
         project.getPlugins().withType(
                 JavaPlugin.class,
                 javaPlugin -> {
-                    tasks.named(JavaPlugin.PROCESS_RESOURCES_TASK_NAME, task -> task.finalizedBy(extensionDescriptorTask));
-                    tasks.named(JavaPlugin.COMPILE_JAVA_TASK_NAME, task -> task.dependsOn(extensionDescriptorTask));
+                    tasks.named(JavaPlugin.COMPILE_JAVA_TASK_NAME,
+                            task -> task.dependsOn(tasks.named(JavaPlugin.PROCESS_RESOURCES_TASK_NAME)));
+                    tasks.named(JavaPlugin.COMPILE_JAVA_TASK_NAME,
+                            task -> task.dependsOn(tasks.named(VALIDATE_EXTENSION_TASK_NAME)));
                     tasks.withType(Test.class).configureEach(Test::useJUnitPlatform);
                     addAnnotationProcessorDependency(project);
                 });
